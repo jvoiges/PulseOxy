@@ -6,6 +6,10 @@ Parts needed: ESP32, PulsOxy Sensor
 
 Please adjust wifi settings and ip for mqtt broker.
 
+Libary needed:
+https://github.com/sparkfun/SparkFun_MAX3010x_Sensor_Library 
+can be selected in Arduino IDE
+
 Example MQTT Broker:
 https://mosquitto.org/ 
 
