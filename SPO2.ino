@@ -32,19 +32,25 @@ by jvoiges
 // OTA 
 #include <WiFi.h>
 #include <WiFiClient.h>
+#include <WiFiAP.h>
 #include <WebServer.h>
 #include <ESPmDNS.h>
 #include <Update.h>
 #include "ServerPages.h" 
+
+// Storing connection Data
+#include <EEPROM.h>
+#define EEPROM_SIZE 512
 
 // MQTT
 #include <PubSubClient.h>
 
 //////////////////////////////////////////////////////////
 // Add your MQTT Broker IP address -- and Wifi connection
-const char* mqtt_server = "IP_ADR";
-const char* ssid = "YourSID";
-const char* password = "YouPW";
+char mqtt_server[128] = "";  // ="IP_ADR";
+char *apSID = "PulseOxy";
+char ssid[128] = ""; // "YourSID";
+char password[128] = ""; //  "YouPW";
 const byte energySaving = 0;
 // TODO
 //////////////////////////////////////////////////////////
@@ -63,6 +69,7 @@ int value = 0;
  
 // OTA
 WebServer server(80);
+int isWifiConnected = 0;
 
 MAX30105 particleSensor;
 
@@ -132,100 +139,55 @@ void setupHeartbeat () {
   particleSensor.setPulseAmplitudeGreen(0); //Turn off Green LED
 }
 
-void setup()
-{
-  Serial.begin(115200); // initialize serial communication at 115200 bits per second:
-  delay(10);
+
+void handleSaveData () {
+    String strSID;
+    String strPW;
+    String emptyStr = "                                      ";
+    String strMqtt;
+
+    strSID = server.arg("SID");
+    strPW = server.arg("wifipwd");
+    strMqtt = server.arg("MQTTSERVER");
+    
+    EEPROM.writeString(0,emptyStr);
+    EEPROM.writeString(128,emptyStr);
+    EEPROM.writeString(256,emptyStr);
+
+    Serial.print("MQTT: ");
+    Serial.println(strMqtt);    
+    Serial.print("SID: ");
+    Serial.println(strSID);
+    Serial.print("PW: ");
+    Serial.println(strPW);   
+    EEPROM.writeString(0, strSID);
+    EEPROM.writeString(128, strPW);
+    EEPROM.writeString(256, strMqtt);
+    EEPROM.commit();
+    server.send(200, "text/plain", "Saved");  
+    delay (200);
+    ESP.restart();  
+}
+
+void handleNotFound() {
+  digitalWrite(readLED, 1);
+  Serial.println(F("webserver Page  not found"));
   
-  // OTA 
-  // Connect to WiFi network
-  WiFi.begin(ssid, password);
-  Serial.println("try wifi connect");
-
-  // Wait for connection
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-    if (iCount++ > 20) {
-       ESP.restart();  
-    }
+  String message = "File Not Found\n\n";
+  message += "URI: ";
+  message += server.uri();
+  message += "\nMethod: ";
+  message += (server.method() == HTTP_GET) ? "GET" : "POST";
+  message += "\nArguments: ";
+  message += server.args();
+  message += "\n";
+  for (uint8_t i = 0; i < server.args(); i++) {
+    message += " " + server.argName(i) + ": " + server.arg(i) + "\n";
   }
-  Serial.println("");
-  Serial.print("Connected to ");
-  Serial.println(ssid);
-  Serial.print("IP address: ");
-  Serial.println(WiFi.localIP());
+  server.send(404, "text/plain", message);
 
-  client.setServer(mqtt_server, 1883);
-  client.setCallback(callback);
-
-  /*use mdns for host name resolution*/
-  if (!MDNS.begin(host)) { //http://esp32.local
-    Serial.println("Error setting up MDNS responder!");
-    while (1) {
-      delay(1000);
-    }
-  }
-  Serial.println("mDNS responder started");
-  /*return index page which is stored in serverIndex */
-  server.on("/", HTTP_GET, []() {
-    server.sendHeader("Connection", "close");
-    server.send(200, "text/html", loginIndex);
-  });
-  server.on("/serverIndex", HTTP_GET, []() {
-    server.sendHeader("Connection", "close");
-    server.send(200, "text/html", serverIndex);
-  });
-  /*handling uploading firmware file */
-  server.on("/update", HTTP_POST, []() {
-    server.sendHeader("Connection", "close");
-    server.send(200, "text/plain", (Update.hasError()) ? "FAIL" : "OK");
-    ESP.restart();
-  }, []() {
-    HTTPUpload& upload = server.upload();
-    if (upload.status == UPLOAD_FILE_START) {
-      Serial.printf("Update: %s\n", upload.filename.c_str());
-      if (!Update.begin(UPDATE_SIZE_UNKNOWN)) { //start with max available size
-        Update.printError(Serial);
-      }
-    } else if (upload.status == UPLOAD_FILE_WRITE) {
-      /* flashing firmware to ESP*/
-      if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
-        Update.printError(Serial);
-      }
-    } else if (upload.status == UPLOAD_FILE_END) {
-      if (Update.end(true)) { //true to set the size to the current progress
-        Serial.printf("Update Success: %u\nRebooting...\n", upload.totalSize);
-      } else {
-        Update.printError(Serial);
-      }
-    }
-  });
-  server.begin();
-
-
-  pinMode(pulseLED, OUTPUT);
-  pinMode(readLED, OUTPUT);
-
-
-  if (!particleSensor.begin(Wire, I2C_SPEED_FAST)) //Use default I2C port, 400kHz speed
-  {
-    Serial.println(F("MAX30105 was not found. Please check wiring/power."));
-    while (1);
-  }
-
-  //setupSPO2();
-  setupHeartbeat();
-
-  
-  Serial.println(F("Part ID:"));
-  Serial.println(particleSensor.readPartID(), DEC);
-  Serial.println(F("Rev ID:"));
-  Serial.println(particleSensor.getRevisionID());
-  Serial.println(F("Temp:"));
-  Serial.println(particleSensor.readTemperature());
-  
-  delay (1000);
+  Serial.println(message);
+  digitalWrite(readLED, 0);
 }
 
 void callback(char* topic, byte* message, unsigned int length) {
@@ -255,6 +217,146 @@ void callback(char* topic, byte* message, unsigned int length) {
       // digitalWrite(ledPin, LOW);
     }
   }
+}
+
+void setup()
+{
+  String strSID;
+  String strPW;
+  String strMqtt;
+  
+  Serial.begin(115200); // initialize serial communication at 115200 bits per second:
+  delay(10);
+
+  // initialize EEPROM with predefined size
+  EEPROM.begin(EEPROM_SIZE);
+  strSID = EEPROM.readString(0);
+  strPW =  EEPROM.readString(128);
+  strMqtt =  EEPROM.readString(256);
+  strSID.toCharArray(ssid, strSID.length()+1);
+  strPW.toCharArray(password, strPW.length()+1);
+  strMqtt.toCharArray(mqtt_server, strMqtt.length()+1);
+
+  Serial.println(strSID);
+  Serial.println(strPW);
+  Serial.println(strMqtt);
+  
+  // Connect to WiFi network
+  WiFi.begin(ssid, password);
+  Serial.println("try wifi connect");
+
+  // Wait for connection
+  while (WiFi.status() != WL_CONNECTED && iCount < 20) {
+    delay(500);
+    Serial.print(".");
+    iCount++;
+  }
+
+  if (WiFi.status() != WL_CONNECTED) {
+    // create own access point
+    WiFi.softAP(apSID);
+  
+    IPAddress IP = WiFi.softAPIP();
+    Serial.print("AP IP address: ");
+    Serial.println(IP);  
+    // WiFi.printDiag(Serial);
+    isWifiConnected = 0;  
+  } else {
+    isWifiConnected = 1;
+    Serial.println("");
+    Serial.print("Connected to ");
+    Serial.println(ssid);
+    Serial.print("IP address: ");
+    Serial.println(WiFi.localIP());
+
+    // wifi ok check mqtt
+    client.setServer(mqtt_server, 1883);
+    client.setCallback(callback);
+  
+    if (client.connect("ESP8266Client")) {
+          Serial.println("connected");
+          client.subscribe("esp32/output");
+    } else {
+      // not connected reenter connection data
+      EEPROM.writeString(0,"                     ");
+      EEPROM.writeString(128,"                     ");
+      EEPROM.writeString(256,"                     ");     
+      Serial.println("not connected");
+      delay (2000);
+      //ESP.restart();
+    }
+      
+  }
+
+  /*use mdns for host name resolution*/
+  if (!MDNS.begin(host)) {
+    Serial.println("Error setting up MDNS responder!");
+    while (1) {
+      delay(1000);
+    }
+  }
+  Serial.println("mDNS responder started");
+  
+  /*return index page which is stored in serverIndex */
+  server.onNotFound(handleNotFound);
+  server.on("/", HTTP_GET, []() {
+    server.sendHeader("Connection", "close");
+    server.send(200, "text/html", loginIndex);
+  });
+  server.on("/serverIndex", HTTP_GET, []() {
+    server.sendHeader("Connection", "close");
+    server.send(200, "text/html", serverIndex);
+  });
+  server.on("/savewifi", handleSaveData );
+      
+  /*handling uploading firmware file */
+  server.on("/update", HTTP_POST, []() {
+    server.sendHeader("Connection", "close");
+    server.send(200, "text/plain", (Update.hasError()) ? "FAIL" : "OK");
+    ESP.restart();
+  }, []() {
+    HTTPUpload& upload = server.upload();
+    if (upload.status == UPLOAD_FILE_START) {
+      Serial.printf("Update: %s\n", upload.filename.c_str());
+      if (!Update.begin(UPDATE_SIZE_UNKNOWN)) { //start with max available size
+        Update.printError(Serial);
+      }
+    } else if (upload.status == UPLOAD_FILE_WRITE) {
+      /* flashing firmware to ESP*/
+      if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+        Update.printError(Serial);
+      }
+    } else if (upload.status == UPLOAD_FILE_END) {
+      if (Update.end(true)) { //true to set the size to the current progress
+        Serial.printf("Update Success: %u\nRebooting...\n", upload.totalSize);
+      } else {
+        Update.printError(Serial);
+      }
+    }
+  });
+  server.begin();
+  
+  pinMode(pulseLED, OUTPUT);
+  pinMode(readLED, OUTPUT);
+
+  if (!particleSensor.begin(Wire, I2C_SPEED_FAST)) //Use default I2C port, 400kHz speed
+  {
+    Serial.println(F("MAX30105 was not found. Please check wiring/power."));
+    while (1);
+  }
+
+  //setupSPO2();
+  setupHeartbeat();
+
+  
+  Serial.println(F("Part ID:"));
+  Serial.println(particleSensor.readPartID(), DEC);
+  Serial.println(F("Rev ID:"));
+  Serial.println(particleSensor.getRevisionID());
+  Serial.println(F("Temp:"));
+  Serial.println(particleSensor.readTemperature());
+
+  delay (1000);
 }
 
 void reconnect() {
@@ -366,28 +468,32 @@ void getSamples (int iStart, int iEnd) {
     redBuffer[i] = particleSensor.getRed();
     irBuffer[i] = particleSensor.getIR();
     digitalWrite(readLED, !digitalRead(readLED)); //Blink onboard LED with every data read
-    
-    if (checkForBeat(irBuffer[i]) == true)
-    {
-      //We sensed a beat!
-      delta = millis() - lastBeat;
-      lastBeat = millis();
-  
-      beatsPerMinute = 60 / (delta / 1000.0);
-  
-      if (beatsPerMinute < 255 && beatsPerMinute > 20)
-      {
-        rates[rateSpot++] = (byte)beatsPerMinute; //Store this reading in the array
-        rateSpot %= RATE_SIZE; //Wrap variable
-  
-        //Take average of readings
-        beatAvg = 0;
-        for (byte x = 0 ; x < RATE_SIZE ; x++)
-          beatAvg += rates[x];
-        beatAvg /= RATE_SIZE;
-      }           
-    }
 
+   if (irBuffer[i] > 50000) {
+
+      if (checkForBeat(irBuffer[i]) == true)
+      {
+        //We sensed a beat!
+        delta = millis() - lastBeat;
+        lastBeat = millis();
+    
+        beatsPerMinute = 60 / (delta / 1000.0);
+        
+        if (beatsPerMinute < 255 && beatsPerMinute >= 0)
+        {
+          rates[rateSpot++] = (byte)beatsPerMinute; //Store this reading in the array
+          rateSpot %= RATE_SIZE; //Wrap variable
+    
+          //Take average of readings
+          beatAvg = 0;
+          for (byte x = 0 ; x < RATE_SIZE ; x++)
+            beatAvg += rates[x];
+          beatAvg /= RATE_SIZE;
+        }           
+      }
+    } else {
+       beatsPerMinute = beatAvg = spo2 = heartRate = 0;
+    }
     Serial.print("IR="); Serial.print(irBuffer[0]);
     Serial.print(", RED="); Serial.print(redBuffer[0]);    
     Serial.print(", BPM="); Serial.print(beatsPerMinute);
@@ -442,16 +548,16 @@ void getSPO2_HeartBeat()
 int iMode = 0;
 void loop()
 {
-  Serial.println("Main");
-  
-  if (!client.connected()) {
-    reconnect();
+  // Serial.println("Main");
+  if (!isWifiConnected) {
+    server.handleClient();
+  } else {
+    if (!client.connected()) {
+      reconnect();
+    }
+    client.loop();    
+    getSPO2_HeartBeat ();   
   }
-  client.loop();
-  
-    // OTA 
-    // server.handleClient();
-
-    getSPO2_HeartBeat ();    
+   
 }
   
