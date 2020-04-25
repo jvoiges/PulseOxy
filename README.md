@@ -16,5 +16,6 @@ https://mosquitto.org/
 Visualization: 
 Node Red: https://nodered.org/ 
 
+![Overview](https://github.com/jvoiges/PulseOxy/blob/master/pic/overview%20600x300.jpg)
 
 
