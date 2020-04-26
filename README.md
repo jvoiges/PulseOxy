@@ -18,4 +18,8 @@ Node Red: https://nodered.org/
 
 ![Overview](https://github.com/jvoiges/PulseOxy/blob/master/pic/overview%20600x300.jpg)
 
+![Fitzing](https://github.com/jvoiges/PulseOxy/blob/master/pic/Fritzing600x250.jpg)
+
+
+
 
