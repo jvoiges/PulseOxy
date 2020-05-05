@@ -45,6 +45,24 @@ by jvoiges
 // MQTT
 #include <PubSubClient.h>
 
+
+//Create semphore und Task
+SemaphoreHandle_t sem = NULL;
+TaskHandle_t Sensor_reading;
+TaskHandle_t Communication;
+void fkt_Communication( void * pvParameters );
+void fkt_Sensor_reading( void * pvParameters );
+
+int glob_BPM = 0;
+int glob_beatAvg = 0;
+int glob_spo2 = 0;
+float glob_temp = 0.0;
+uint32_t glob_ir = 0;
+uint32_t glob_red = 0;
+int glob_changedHeartBeat = 0;
+int glob_changedIR = 0;
+ 
+
 //////////////////////////////////////////////////////////
 // Add your MQTT Broker IP address -- and Wifi connection
 char mqtt_server[128] = "";  // ="IP_ADR";
@@ -52,7 +70,6 @@ char *apSID = "PulseOxy";
 char ssid[128] = ""; // "YourSID";
 char password[128] = ""; //  "YouPW";
 const byte energySaving = 0;
-// TODO
 //////////////////////////////////////////////////////////
 
 static bool hasIoTHub = false;
@@ -227,7 +244,9 @@ void setup()
   
   Serial.begin(115200); // initialize serial communication at 115200 bits per second:
   delay(10);
-
+  Serial.println("Start ------ ------ ------ ");
+  sem =  xSemaphoreCreateMutex();
+ 
   // initialize EEPROM with predefined size
   EEPROM.begin(EEPROM_SIZE);
   strSID = EEPROM.readString(0);
@@ -237,9 +256,10 @@ void setup()
   strPW.toCharArray(password, strPW.length()+1);
   strMqtt.toCharArray(mqtt_server, strMqtt.length()+1);
 
-  Serial.println(strSID);
-  Serial.println(strPW);
-  Serial.println(strMqtt);
+  Serial.println("Stored:");
+  Serial.print("SID:"); Serial.println(strSID);
+  Serial.print("PW:"); Serial.println(strPW);
+  Serial.print("MQTT:"); Serial.println(strMqtt);
   
   // Connect to WiFi network
   WiFi.begin(ssid, password);
@@ -251,19 +271,19 @@ void setup()
     Serial.print(".");
     iCount++;
   }
-
+  Serial.println("end try"); 
+  
   if (WiFi.status() != WL_CONNECTED) {
     // create own access point
     WiFi.softAP(apSID);
   
     IPAddress IP = WiFi.softAPIP();
-    Serial.print("AP IP address: ");
+    Serial.print("acting as AP --- IP address: ");
     Serial.println(IP);  
     // WiFi.printDiag(Serial);
     isWifiConnected = 0;  
   } else {
     isWifiConnected = 1;
-    Serial.println("");
     Serial.print("Connected to ");
     Serial.println(ssid);
     Serial.print("IP address: ");
@@ -276,19 +296,10 @@ void setup()
     if (client.connect("ESP8266Client")) {
           Serial.println("connected");
           client.subscribe("esp32/output");
-    } else {
-      // not connected reenter connection data
-      EEPROM.writeString(0,"                     ");
-      EEPROM.writeString(128,"                     ");
-      EEPROM.writeString(256,"                     ");     
-      Serial.println("not connected");
-      delay (2000);
-      //ESP.restart();
-    }
-      
+    }      
   }
 
-  /*use mdns for host name resolution*/
+  //use mdns for host name resolution
   if (!MDNS.begin(host)) {
     Serial.println("Error setting up MDNS responder!");
     while (1) {
@@ -297,7 +308,7 @@ void setup()
   }
   Serial.println("mDNS responder started");
   
-  /*return index page which is stored in serverIndex */
+  // return index page which is stored in serverIndex 
   server.onNotFound(handleNotFound);
   server.on("/", HTTP_GET, []() {
     server.sendHeader("Connection", "close");
@@ -309,7 +320,7 @@ void setup()
   });
   server.on("/savewifi", handleSaveData );
       
-  /*handling uploading firmware file */
+  // handling uploading firmware file 
   server.on("/update", HTTP_POST, []() {
     server.sendHeader("Connection", "close");
     server.send(200, "text/plain", (Update.hasError()) ? "FAIL" : "OK");
@@ -322,7 +333,7 @@ void setup()
         Update.printError(Serial);
       }
     } else if (upload.status == UPLOAD_FILE_WRITE) {
-      /* flashing firmware to ESP*/
+      // flashing firmware to ESP
       if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
         Update.printError(Serial);
       }
@@ -356,8 +367,28 @@ void setup()
   Serial.println(F("Temp:"));
   Serial.println(particleSensor.readTemperature());
 
-  delay (1000);
-}
+  //////////////
+  //Task Handling
+  xTaskCreatePinnedToCore(
+                    fkt_Sensor_reading,   /* Task function. */
+                    "Sensor_reading",     /* name of task. */
+                    10000,       /* Stack size of task */
+                    NULL,        /* parameter of the task */
+                    1,           /* priority of the task */
+                    &Sensor_reading,      /* Task handle to keep track of created task */
+                    0);          /* pin task to core 0 */                  
+  delay(500); 
+
+  xTaskCreatePinnedToCore(
+                    fkt_Communication,   /* Task function. */
+                    "Communication",     /* name of task. */
+                    10000,       /* Stack size of task */
+                    NULL,        /* parameter of the task */
+                    1,           /* priority of the task */
+                    &Communication,      /* Task handle to keep track of created task */
+                    1);          /* pin task to core 1 */
+    delay(500); 
+  }
 
 void reconnect() {
   // Loop until we're reconnected
@@ -373,7 +404,7 @@ void reconnect() {
       Serial.print(client.state());
       Serial.println(" try again in 5 seconds");
       // Wait 5 seconds before retrying
-      delay(5000);
+      // delay(5000);
     }
   }
 }
@@ -423,12 +454,11 @@ void mqtt_sendSPO2 (int spo2) {
   lastSpo2 = spo2;
 }
 
-void mqtt_sendTemperature () {
+void mqtt_sendTemperature (float fTemp) {
   char sTemp[128];
-  float t =  particleSensor.readTemperature();
   
-  if ( 0 < t < 50) {
-    snprintf (sTemp, sizeof(sTemp), "%2.2f",t);
+  if ( 0 < fTemp < 50) {
+    snprintf (sTemp, sizeof(sTemp), "%2.2f",fTemp);
   } else
     snprintf (sTemp, sizeof(sTemp), "0");
         
@@ -467,7 +497,6 @@ void getSamples (int iStart, int iEnd) {
 
     redBuffer[i] = particleSensor.getRed();
     irBuffer[i] = particleSensor.getIR();
-    digitalWrite(readLED, !digitalRead(readLED)); //Blink onboard LED with every data read
 
    if (irBuffer[i] > 50000) {
 
@@ -493,33 +522,37 @@ void getSamples (int iStart, int iEnd) {
       }
     } else {
        beatsPerMinute = beatAvg = spo2 = heartRate = 0;
-    }
-    Serial.print("IR="); Serial.print(irBuffer[0]);
-    Serial.print(", RED="); Serial.print(redBuffer[0]);    
-    Serial.print(", BPM="); Serial.print(beatsPerMinute);
-    Serial.print(", Avg BPM="); Serial.print(beatAvg);
-    Serial.print(",-- spo2="); Serial.print(spo2);
-    Serial.print(", validSPO2="); Serial.print(validSPO2);
-    Serial.print(", heartRate="); Serial.print(heartRate);
-    Serial.print(", validHeartRate="); Serial.println(validHeartRate);
+//       xSemaphoreTake(sem, portMAX_DELAY);  
+       glob_BPM = glob_beatAvg = glob_spo2 = 0; glob_changedHeartBeat = 1;
+//       xSemaphoreGive(sem);  
+    } 
 
-    mqtt_sendDiff(redBuffer[i], irBuffer[i]);  
-    mqtt_sendIR ( irBuffer[i]);
-       
+//    xSemaphoreTake(sem, portMAX_DELAY);
+    glob_ir = irBuffer[i];
+    glob_red = redBuffer[i];
+    glob_changedIR = 1;
+//    xSemaphoreGive(sem); 
+           
     particleSensor.nextSample(); //We're finished with this sample so move to next sample
   }
-
+  digitalWrite(readLED, !digitalRead(readLED)); //Blink onboard LED with every data read
+  
   //calculate heart rate and SpO2 after first 100 samples (first 4 seconds of samples)
   maxim_heart_rate_and_oxygen_saturation(irBuffer, iEnd, redBuffer, &spo2, &validSPO2, &heartRate, &validHeartRate);
 
-  mqtt_sendHeartbeat(beatAvg);
+  if ((10 < spo2 <= 100) && validSPO2 == 1) {        
+  } else {
+    spo2 = 0;
+  }
+  float t =  particleSensor.readTemperature();  
+  // xSemaphoreTake(sem, portMAX_DELAY);
+  glob_BPM = beatsPerMinute;
+  glob_beatAvg = beatAvg;
+  glob_spo2 = spo2;
+  glob_temp = t;
+  glob_changedHeartBeat = 1;
+  // xSemaphoreGive(sem); 
 
-  if ((10 < spo2 <= 100) && validSPO2 == 1) {
-    mqtt_sendSPO2 (spo2);
-  } else 
-    mqtt_sendSPO2 (0);
-    
-  mqtt_sendTemperature ();
   // Serial.print(heartRate);Serial.print(" ");Serial.println(spo2);
 }
 
@@ -545,19 +578,83 @@ void getSPO2_HeartBeat()
   }
 }
 
-int iMode = 0;
+void fkt_Communication( void * pvParameters ){
+  int iBPM, iBeatAvg, iSpo2;
+  float fT;
+  int iIr, iRed, i, ii;
+  
+  Serial.print("fkt_Communication running on core ");
+  Serial.println(xPortGetCoreID());
+
+  while (1) {       
+    // Serial.print("fkt_Communication running on core ");
+    // Serial.println(xPortGetCoreID());
+ 
+      server.handleClient();
+//      if (!client.connected()) {
+//        reconnect();
+//      }   
+//      client.loop();        
+      
+//    xSemaphoreTake(sem, portMAX_DELAY);  
+      i = glob_changedIR; ii = glob_changedHeartBeat;
+      iRed = glob_red, iIr = glob_ir, iSpo2 = glob_spo2, iBeatAvg = glob_beatAvg, fT = glob_temp;
+//    xSemaphoreGive(sem);
+        
+    if (i) {
+      // mqtt_sendDiff(glob_red, glob_ir);  
+      mqtt_sendIR ( iIr);
+      // Serial.print("IR="); Serial.print(iIr);
+      // Serial.print(", RED="); Serial.print(iRed);
+      Serial.println(iRed); 
+    } else {
+      // Serial.print("IR_"); Serial.print(iIr);
+      // Serial.print(", RED_"); Serial.print(iRed);               
+    }
+           
+    if (ii) {
+      mqtt_sendSPO2 (iSpo2);
+      mqtt_sendHeartbeat(iBeatAvg);
+      mqtt_sendTemperature (fT);
+      
+      // Serial.print(", BPM="); Serial.print(beatsPerMinute);
+      // Serial.print(", Avg BPM="); Serial.print(iBeatAvg);
+      // Serial.print(",-- spo2="); Serial.print(iSpo2);
+      // Serial.print(", validSPO2="); Serial.print(validSPO2);
+      // Serial.print(", heartRate="); Serial.print(heartRate);
+      // Serial.print(", validHeartRate="); Serial.println(validHeartRate);
+    } else {
+      // Serial.print(", BPM_"); Serial.print(beatsPerMinute);
+      // Serial.print(", Avg BPM_"); Serial.print(iBeatAvg);
+      // Serial.print(",-- spo2_"); Serial.print(iSpo2);
+      // Serial.print(", validSPO2_"); Serial.print(validSPO2);
+      // Serial.print(", heartRate_"); Serial.print(heartRate);
+      // Serial.print(", validHeartRate_"); Serial.println(validHeartRate);
+      
+    }
+    glob_changedIR = glob_changedHeartBeat = 0;
+    
+    vTaskDelay(10);
+  }
+}
+
+void fkt_Sensor_reading( void * pvParameters ){
+  Serial.print("fkt_Sensor_reading running on core ");
+  Serial.println(xPortGetCoreID());  
+  
+  while (1) {
+    getSPO2_HeartBeat ();  
+    // Serial.print("fkt_Sensor_reading running on core ");
+    // Serial.println(xPortGetCoreID());  
+    vTaskDelay(10);
+  }
+}
+  
 void loop()
 {
-  // Serial.println("Main");
-  if (!isWifiConnected) {
-    server.handleClient();
-  } else {
-    if (!client.connected()) {
-      reconnect();
-    }
-    client.loop();    
-    getSPO2_HeartBeat ();   
-  }
-   
+  Serial.print("MAIN running on core ");
+  Serial.println(xPortGetCoreID());
+  // MAIN not exe
+  vTaskSuspend(NULL);  
 }
   
